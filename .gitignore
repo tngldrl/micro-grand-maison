@@ -1,0 +1,6 @@
+./.agent/*
+spec/*
+openspec/*
+.agent/*
+.DS_Store
+proposal/*
