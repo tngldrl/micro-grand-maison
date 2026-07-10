@@ -4,3 +4,7 @@ openspec/*
 .agent/*
 .DS_Store
 proposal/*
+
+# dev.sh のローカル開発ログ・PIDファイル
+.dev-logs/
+.dev-pids

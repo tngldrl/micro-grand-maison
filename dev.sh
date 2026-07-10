@@ -19,6 +19,24 @@ MCP_DIR="$SCRIPT_DIR/micro-grand-maison-mcp"
 API_DIR="$SCRIPT_DIR/micro-grand-maison-api"
 WEB_DIR="$SCRIPT_DIR/micro-grand-maison-web"
 
+# Python interpreter selection (prioritize stable, working Python versions with SSL support)
+PYTHON=""
+for cmd in "/usr/local/bin/python3.12" "/opt/homebrew/bin/python3.12" "/usr/local/bin/python3.11" "/opt/homebrew/bin/python3.11" "/usr/local/bin/python3" "/opt/homebrew/bin/python3" "python3"; do
+  if [ -x "$cmd" ]; then
+    # Verify the selected python has functioning SSL support (bypasses broken pyenv shims)
+    if "$cmd" -c "import ssl" >/dev/null 2>&1; then
+      PYTHON="$cmd"
+      break
+    fi
+  fi
+done
+
+if [ -z "$PYTHON" ]; then
+  log_error "動作する Python3 インタプリタ（SSL対応）が見つかりません。"
+  log_error "Homebrewで Python 3.12 をインストールしてください: brew install python@3.12"
+  exit 1
+fi
+
 # ANSIカラー
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -44,11 +62,20 @@ cmd_start() {
   echo "================================================================"
   echo ""
 
-  # ------------------------------------------------------------------
-  # 1. PostgreSQL (Docker Compose)
-  # ------------------------------------------------------------------
   log_info "PostgreSQL を起動中..."
+  # Resolve container name conflicts if the container already exists from another context
+  docker rm -f micro-grand-maison-db 2>/dev/null || true
   docker compose -f "$API_DIR/docker-compose.yml" up -d
+
+  # Wait for PostgreSQL to be ready to accept connections
+  log_info "  PostgreSQL の起動完了を待機しています..."
+  for i in {1..15}; do
+    if docker exec micro-grand-maison-db pg_isready -U postgres >/dev/null 2>&1; then
+      break
+    fi
+    sleep 1
+  done
+
   log_success "PostgreSQL: localhost:5432"
 
   # ------------------------------------------------------------------
@@ -59,8 +86,9 @@ cmd_start() {
     cd "$MCP_DIR"
     if [ ! -d ".venv" ]; then
       log_warn "  .venv が見つかりません。仮想環境を作成します..."
-      /usr/bin/python3 -m venv .venv
-      .venv/bin/pip install -q -r requirements.txt
+      $PYTHON -m venv .venv
+      .venv/bin/pip install --only-binary=:all: cryptography
+      .venv/bin/pip install --no-cache-dir --prefer-binary -q -r requirements.txt
     fi
     .venv/bin/python3 server.py >> "$LOG_DIR/mcp.log" 2>&1 &
     echo "MCP_PID=$!" >> "$PID_FILE"
@@ -75,13 +103,14 @@ cmd_start() {
     cd "$API_DIR"
     if [ ! -d ".venv" ]; then
       log_warn "  .venv が見つかりません。仮想環境を作成します..."
-      /usr/bin/python3 -m venv .venv
-      .venv/bin/pip install -q -r requirements.txt
+      $PYTHON -m venv .venv
+      .venv/bin/pip install --only-binary=:all: cryptography
+      .venv/bin/pip install --no-cache-dir --prefer-binary -q -r requirements.txt
     fi
 
     # DB マイグレーション（初回 or 変更があれば適用）
     log_info "  Alembic マイグレーションを実行中..."
-    .venv/bin/alembic upgrade head >> "$LOG_DIR/api.log" 2>&1 || true
+    .venv/bin/python3 -m alembic upgrade head >> "$LOG_DIR/api.log" 2>&1 || true
 
     .venv/bin/python3 main.py >> "$LOG_DIR/api.log" 2>&1 &
     echo "API_PID=$!" >> "$PID_FILE"
